@@ -47,11 +47,17 @@ def get_user_entries(user_id, start_date, end_date):
                 WHERE user_id = %s 
                 AND date >= %s 
                 AND date <= %s
+                ORDER BY date
                 """,
                 (user_id, start_date.isoformat(), end_date.isoformat())
             )
             results = cur.fetchall()
-            return pd.DataFrame([dict(row) for row in results]) if results else pd.DataFrame()
+            if results:
+                df = pd.DataFrame([dict(row) for row in results])
+                df['date'] = pd.to_datetime(df['date'])
+                df['hours_worked'] = df['hours_worked'].astype(float)
+                return df
+            return pd.DataFrame()
 
 def save_entries(entries):
     with get_db_connection() as conn:
@@ -185,50 +191,69 @@ else:
         try:
             # Fetch existing entries
             entries_df = get_user_entries(user['id'], start_date, end_date)
-
+            
             # Prepare dates
             date_range = pd.date_range(start=start_date, end=end_date)
+            
             if entries_df.empty:
-                # Create empty dataframe
+                # Create empty dataframe with all dates
                 entries_df = pd.DataFrame({
                     'date': date_range,
-                    'hours_worked': [0]*len(date_range),
-                    'tasks_done': ['']*len(date_range),
-                    'facility': ['']*len(date_range),
+                    'hours_worked': [0.0] * len(date_range),
+                    'tasks_done': [''] * len(date_range),
+                    'facility': [''] * len(date_range),
                 })
             else:
-                entries_df['date'] = pd.to_datetime(entries_df['date'])
-                # Reindex to fill missing dates
-                entries_df = entries_df.set_index('date').reindex(date_range).reset_index()
-                entries_df.rename(columns={'index': 'date'}, inplace=True)
+                # Create a template DataFrame with all dates
+                template_df = pd.DataFrame({'date': date_range})
                 
-                # Add these lines to handle missing values
-                entries_df['hours_worked'] = entries_df['hours_worked'].fillna(0)
+                # Merge existing entries with template to ensure all dates are present
+                entries_df = pd.merge(
+                    template_df,
+                    entries_df,
+                    on='date',
+                    how='left'
+                )
+                
+                # Fill missing values
+                entries_df['hours_worked'] = entries_df['hours_worked'].fillna(0.0)
                 entries_df['tasks_done'] = entries_df['tasks_done'].fillna('')
                 entries_df['facility'] = entries_df['facility'].fillna('')
 
             with st.form("entry_form"):
                 st.write("Fill in your work details for each day.")
                 entries = []
+                
+                # Sort DataFrame by date to ensure consistent display
+                entries_df = entries_df.sort_values('date')
+                
                 for idx, row in entries_df.iterrows():
                     date = row['date'].date()
                     st.subheader(f"Date: {date}")
+                    
+                    # Convert hours_worked to float before converting to int for the input
+                    current_hours = float(row['hours_worked']) if pd.notnull(row['hours_worked']) else 0.0
+                    
                     hours_worked = st.number_input(
                         f"Hours Worked on {date}",
-                        min_value=0,
-                        max_value=24,
-                        value=int(row['hours_worked']),
-                        key=f"hours_{idx}"
+                        min_value=0.0,
+                        max_value=24.0,
+                        value=float(current_hours),
+                        key=f"hours_{date}"  # Changed key to use date instead of idx
                     )
+                    
+                    current_tasks = str(row['tasks_done']) if pd.notnull(row['tasks_done']) else ''
                     tasks_done = st.text_input(
                         f"Tasks Done on {date}",
-                        value=row['tasks_done'],
-                        key=f"tasks_{idx}"
+                        value=current_tasks,
+                        key=f"tasks_{date}"  # Changed key to use date instead of idx
                     )
+                    
+                    current_facility = str(row['facility']) if pd.notnull(row['facility']) else ''
                     facility = st.text_input(
                         f"Facility on {date}",
-                        value=row['facility'],
-                        key=f"facility_{idx}"
+                        value=current_facility,
+                        key=f"facility_{date}"  # Changed key to use date instead of idx
                     )
 
                     entry = {
