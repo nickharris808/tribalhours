@@ -28,12 +28,12 @@ def get_current_period():
     end_date = today.replace(day=end_day)
     return period, start_date, end_date
 
-def authenticate_user(last_name, phone_number):
+def authenticate_user(email, phone_number):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM users WHERE last_name = %s AND phone_number = %s",
-                (last_name, phone_number)
+                "SELECT * FROM users WHERE email = %s AND phone_number = %s",
+                (email, phone_number)
             )
             result = cur.fetchone()
             return dict(result) if result else None
@@ -100,7 +100,7 @@ def get_admin_report(start_date, end_date):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT w.*, u.last_name, u.phone_number 
+                SELECT w.*, u.email, u.last_name 
                 FROM work_done w
                 JOIN users u ON w.user_id = u.id
                 WHERE w.date >= %s AND w.date <= %s
@@ -125,12 +125,12 @@ if 'user' not in st.session_state:
 if not st.session_state['authenticated']:
     st.header("Login")
     with st.form("login_form"):
-        last_name = st.text_input("last_name")
+        email = st.text_input("Email")
         phone_number = st.text_input("Phone Number")
         submitted = st.form_submit_button("Login")
         if submitted:
             try:
-                user = authenticate_user(last_name, phone_number)
+                user = authenticate_user(email, phone_number)
                 if user:
                     st.session_state['authenticated'] = True
                     st.session_state['user'] = user
@@ -141,7 +141,7 @@ if not st.session_state['authenticated']:
                 st.error(f"Login failed: {str(e)}")
 else:
     user = st.session_state['user']
-    st.sidebar.write(f"Logged in as: {user['last_name']}")
+    st.sidebar.write(f"Logged in as: {user['email']}")
     logout = st.sidebar.button("Logout")
     if logout:
         st.session_state['authenticated'] = False
@@ -166,7 +166,7 @@ else:
             report_df = get_admin_report(start_date, end_date)
             if report_df is not None:
                 # Aggregate data
-                summary_df = report_df.groupby(['user_id', 'phone_number', 'last_name']).agg({'hours_worked': 'sum'}).reset_index()
+                summary_df = report_df.groupby(['user_id', 'email', 'last_name']).agg({'hours_worked': 'sum'}).reset_index()
                 st.subheader("Summary")
                 st.table(summary_df)
 
@@ -192,19 +192,20 @@ else:
                 # Create empty dataframe
                 entries_df = pd.DataFrame({
                     'date': date_range,
-                    'hours_worked': [0]*len(date_range),
-                    'tasks_done': ['']*len(date_range),
-                    'facility': ['']*len(date_range),
+                    'hours_worked': [0] * len(date_range),
+                    'tasks_done': [''] * len(date_range),
+                    'facility': [''] * len(date_range),
                 })
             else:
                 entries_df['date'] = pd.to_datetime(entries_df['date'])
                 entries_df = entries_df.set_index('date').reindex(date_range).reset_index()
+                entries_df.rename(columns={'index': 'date'}, inplace=True)
 
             with st.form("entry_form"):
                 st.write("Fill in your work details for each day.")
                 entries = []
                 for idx, row in entries_df.iterrows():
-                    date = row['index'].date()
+                    date = row['date'].date()
                     st.subheader(f"Date: {date}")
                     hours_worked = st.number_input(
                         f"Hours Worked on {date}",
@@ -226,7 +227,7 @@ else:
 
                     entry = {
                         'user_id': user['id'],
-                        'date': row['index'].isoformat(),
+                        'date': row['date'].isoformat(),
                         'period': period,
                         'month': start_date.month,
                         'year': start_date.year,
