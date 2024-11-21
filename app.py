@@ -1,12 +1,21 @@
 import streamlit as st
-from supabase import create_client, Client
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
 import pandas as pd
 
-# Supabase configuration
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Database configuration
+DB_CONFIG = {
+    "host": "aws-0-us-east-1.pooler.supabase.com",
+    "port": "6543",
+    "database": "postgres",
+    "user": "postgres.vrteqedymxdwhcztvmur",
+    "password": "7pwF28rp6acy80yV"
+}
+
+# Helper function to get database connection
+def get_db_connection():
+    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
 
 # Helper functions
 def get_current_period():
@@ -20,36 +29,88 @@ def get_current_period():
     return period, start_date, end_date
 
 def authenticate_user(email, phone_number):
-    response = supabase.table('users').select('*').eq('email', email).eq('phone_number', phone_number).execute()
-    if response.data:
-        return response.data[0]  # Return user record
-    else:
-        return None
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM users WHERE email = %s AND phone_number = %s",
+                (email, phone_number)
+            )
+            result = cur.fetchone()
+            return dict(result) if result else None
 
 def get_user_entries(user_id, start_date, end_date):
-    response = supabase.table('work_done').select('*').eq('user_id', user_id).gte('date', start_date.isoformat()).lte('date', end_date.isoformat()).execute()
-    return pd.DataFrame(response.data)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM work_done 
+                WHERE user_id = %s 
+                AND date >= %s 
+                AND date <= %s
+                """,
+                (user_id, start_date.isoformat(), end_date.isoformat())
+            )
+            results = cur.fetchall()
+            return pd.DataFrame([dict(row) for row in results]) if results else pd.DataFrame()
 
 def save_entries(entries):
-    for entry in entries:
-        # Check if entry exists
-        response = supabase.table('work_done').select('*').eq('user_id', entry['user_id']).eq('date', entry['date']).execute()
-        if response.data:
-            # Update existing entry
-            supabase.table('work_done').update(entry).eq('user_id', entry['user_id']).eq('date', entry['date']).execute()
-        else:
-            # Insert new entry
-            supabase.table('work_done').insert(entry).execute()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            for entry in entries:
+                # Check if entry exists
+                cur.execute(
+                    "SELECT id FROM work_done WHERE user_id = %s AND date = %s",
+                    (entry['user_id'], entry['date'])
+                )
+                existing = cur.fetchone()
+                
+                if existing:
+                    # Update existing entry
+                    cur.execute(
+                        """
+                        UPDATE work_done 
+                        SET hours_worked = %s, tasks_done = %s, facility = %s,
+                            period = %s, month = %s, year = %s
+                        WHERE user_id = %s AND date = %s
+                        """,
+                        (
+                            entry['hours_worked'], entry['tasks_done'], entry['facility'],
+                            entry['period'], entry['month'], entry['year'],
+                            entry['user_id'], entry['date']
+                        )
+                    )
+                else:
+                    # Insert new entry
+                    cur.execute(
+                        """
+                        INSERT INTO work_done 
+                        (user_id, date, hours_worked, tasks_done, facility, period, month, year)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            entry['user_id'], entry['date'], entry['hours_worked'],
+                            entry['tasks_done'], entry['facility'], entry['period'],
+                            entry['month'], entry['year']
+                        )
+                    )
+            conn.commit()
 
 def get_admin_report(start_date, end_date):
-    response = supabase.table('work_done').select('*').gte('date', start_date.isoformat()).lte('date', end_date.isoformat()).execute()
-    df = pd.DataFrame(response.data)
-    if df.empty:
-        return None
-    users_response = supabase.table('users').select('*').execute()
-    users_df = pd.DataFrame(users_response.data)
-    df = df.merge(users_df, left_on='user_id', right_on='id', suffixes=('_work', '_user'))
-    return df
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT w.*, u.email, u.last_name 
+                FROM work_done w
+                JOIN users u ON w.user_id = u.id
+                WHERE w.date >= %s AND w.date <= %s
+                """,
+                (start_date.isoformat(), end_date.isoformat())
+            )
+            results = cur.fetchall()
+            if not results:
+                return None
+            return pd.DataFrame([dict(row) for row in results])
 
 # Streamlit app
 st.title("Doctor Scheduling and Billing App")
@@ -68,13 +129,16 @@ if not st.session_state['authenticated']:
         phone_number = st.text_input("Phone Number")
         submitted = st.form_submit_button("Login")
         if submitted:
-            user = authenticate_user(email, phone_number)
-            if user:
-                st.session_state['authenticated'] = True
-                st.session_state['user'] = user
-                st.success("Logged in successfully!")
-            else:
-                st.error("Invalid credentials. Please try again.")
+            try:
+                user = authenticate_user(email, phone_number)
+                if user:
+                    st.session_state['authenticated'] = True
+                    st.session_state['user'] = user
+                    st.success("Logged in successfully!")
+                else:
+                    st.error("Invalid credentials. Please try again.")
+            except Exception as e:
+                st.error(f"Login failed: {str(e)}")
 else:
     user = st.session_state['user']
     st.sidebar.write(f"Logged in as: {user['email']}")
@@ -98,64 +162,86 @@ else:
             end_date = start_date - timedelta(days=1)
             start_date = end_date.replace(day=1)
 
-        report_df = get_admin_report(start_date, end_date)
-        if report_df is not None:
-            # Aggregate data
-            summary_df = report_df.groupby(['user_id', 'email', 'last_name']).agg({'hours_worked': 'sum'}).reset_index()
-            st.subheader("Summary")
-            st.table(summary_df)
+        try:
+            report_df = get_admin_report(start_date, end_date)
+            if report_df is not None:
+                # Aggregate data
+                summary_df = report_df.groupby(['user_id', 'email', 'last_name']).agg({'hours_worked': 'sum'}).reset_index()
+                st.subheader("Summary")
+                st.table(summary_df)
 
-            csv = report_df.to_csv(index=False)
-            st.download_button("Download Detailed Report CSV", csv, "report.csv", "text/csv")
-        else:
-            st.info("No data available for the last completed period.")
+                csv = report_df.to_csv(index=False)
+                st.download_button("Download Detailed Report CSV", csv, "report.csv", "text/csv")
+            else:
+                st.info("No data available for the last completed period.")
+        except Exception as e:
+            st.error(f"Error generating report: {str(e)}")
     else:
         st.header("Work Entry")
 
         period, start_date, end_date = get_current_period()
         st.write(f"Current Period: **{period}** ({start_date.date()} to {end_date.date()})")
 
-        # Fetch existing entries
-        entries_df = get_user_entries(user['id'], start_date, end_date)
+        try:
+            # Fetch existing entries
+            entries_df = get_user_entries(user['id'], start_date, end_date)
 
-        # Prepare dates
-        date_range = pd.date_range(start=start_date, end=end_date)
-        if entries_df.empty:
-            # Create empty dataframe
-            entries_df = pd.DataFrame({
-                'date': date_range,
-                'hours_worked': [0]*len(date_range),
-                'tasks_done': ['']*len(date_range),
-                'facility': ['']*len(date_range),
-            })
-        else:
-            entries_df['date'] = pd.to_datetime(entries_df['date'])
-            entries_df = entries_df.set_index('date').reindex(date_range).reset_index()
+            # Prepare dates
+            date_range = pd.date_range(start=start_date, end=end_date)
+            if entries_df.empty:
+                # Create empty dataframe
+                entries_df = pd.DataFrame({
+                    'date': date_range,
+                    'hours_worked': [0]*len(date_range),
+                    'tasks_done': ['']*len(date_range),
+                    'facility': ['']*len(date_range),
+                })
+            else:
+                entries_df['date'] = pd.to_datetime(entries_df['date'])
+                entries_df = entries_df.set_index('date').reindex(date_range).reset_index()
 
-        with st.form("entry_form"):
-            st.write("Fill in your work details for each day.")
-            entries = []
-            for idx, row in entries_df.iterrows():
-                date = row['index'].date()
-                st.subheader(f"Date: {date}")
-                hours_worked = st.number_input(f"Hours Worked on {date}", min_value=0, max_value=24, value=int(row.get('hours_worked', 0)), key=f"hours_{idx}")
-                tasks_done = st.text_input(f"Tasks Done on {date}", value=row.get('tasks_done', ''), key=f"tasks_{idx}")
-                facility = st.text_input(f"Facility on {date}", value=row.get('facility', ''), key=f"facility_{idx}")
+            with st.form("entry_form"):
+                st.write("Fill in your work details for each day.")
+                entries = []
+                for idx, row in entries_df.iterrows():
+                    date = row['index'].date()
+                    st.subheader(f"Date: {date}")
+                    hours_worked = st.number_input(
+                        f"Hours Worked on {date}",
+                        min_value=0,
+                        max_value=24,
+                        value=int(row.get('hours_worked', 0)),
+                        key=f"hours_{idx}"
+                    )
+                    tasks_done = st.text_input(
+                        f"Tasks Done on {date}",
+                        value=row.get('tasks_done', ''),
+                        key=f"tasks_{idx}"
+                    )
+                    facility = st.text_input(
+                        f"Facility on {date}",
+                        value=row.get('facility', ''),
+                        key=f"facility_{idx}"
+                    )
 
-                entry = {
-                    'user_id': user['id'],
-                    'date': row['index'].isoformat(),
-                    'period': period,
-                    'month': start_date.month,
-                    'year': start_date.year,
-                    'hours_worked': hours_worked,
-                    'tasks_done': tasks_done,
-                    'facility': facility
-                }
-                entries.append(entry)
+                    entry = {
+                        'user_id': user['id'],
+                        'date': row['index'].isoformat(),
+                        'period': period,
+                        'month': start_date.month,
+                        'year': start_date.year,
+                        'hours_worked': hours_worked,
+                        'tasks_done': tasks_done,
+                        'facility': facility
+                    }
+                    entries.append(entry)
 
-            submitted = st.form_submit_button("Save Entries")
-            if submitted:
-                save_entries(entries)
-                st.success("Entries saved successfully!")
-
+                submitted = st.form_submit_button("Save Entries")
+                if submitted:
+                    try:
+                        save_entries(entries)
+                        st.success("Entries saved successfully!")
+                    except Exception as e:
+                        st.error(f"Error saving entries: {str(e)}")
+        except Exception as e:
+            st.error(f"Error loading entries: {str(e)}")
