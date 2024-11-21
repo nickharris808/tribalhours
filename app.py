@@ -23,7 +23,7 @@ def get_current_period():
     day = today.day
     period = 'Part 1' if day <= 15 else 'Part 2'
     start_day = 1 if period == 'Part 1' else 16
-    end_day = 15 if period == 'Part 1' else (today.replace(month=today.month+1, day=1) - timedelta(days=1)).day
+    end_day = 15 if period == 'Part 1' else (today.replace(month=today.month + 1, day=1) - timedelta(days=1)).day
     start_date = today.replace(day=start_day)
     end_date = today.replace(day=end_day)
     return period, start_date, end_date
@@ -125,7 +125,7 @@ if 'user' not in st.session_state:
 if not st.session_state['authenticated']:
     st.header("Login")
     with st.form("login_form"):
-        last_name = st.text_input("last_name")
+        last_name = st.text_input("Last Name")
         phone_number = st.text_input("Phone Number")
         submitted = st.form_submit_button("Login")
         if submitted:
@@ -198,13 +198,15 @@ else:
                 })
             else:
                 entries_df['date'] = pd.to_datetime(entries_df['date'])
+                # Reindex to fill missing dates
                 entries_df = entries_df.set_index('date').reindex(date_range).reset_index()
+                entries_df.rename(columns={'index': 'date'}, inplace=True)
 
             with st.form("entry_form"):
                 st.write("Fill in your work details for each day.")
                 entries = []
                 for idx, row in entries_df.iterrows():
-                    date = row['index'].date()
+                    date = row['date'].date()
                     st.subheader(f"Date: {date}")
                     hours_worked = st.number_input(
                         f"Hours Worked on {date}",
@@ -226,7 +228,7 @@ else:
 
                     entry = {
                         'user_id': user['id'],
-                        'date': row['index'].isoformat(),
+                        'date': row['date'].isoformat(),
                         'period': period,
                         'month': start_date.month,
                         'year': start_date.year,
