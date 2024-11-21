@@ -183,74 +183,72 @@ else:
         st.write(f"Current Period: **{period}** ({start_date.date()} to {end_date.date()})")
 
         try:
-    # Fetch existing entries
-    entries_df = get_user_entries(user['id'], start_date, end_date)
+            # Fetch existing entries
+            entries_df = get_user_entries(user['id'], start_date, end_date)
 
-    # Prepare dates
-    date_range = pd.date_range(start=start_date, end=end_date)
-    if entries_df.empty:
-        # Create empty dataframe for the date range
-        entries_df = pd.DataFrame({
-            'date': date_range,
-            'hours_worked': [0] * len(date_range),
-            'tasks_done': [''] * len(date_range),
-            'facility': [''] * len(date_range),
-        })
-    else:
-        # Ensure 'date' is in datetime format
-        entries_df['date'] = pd.to_datetime(entries_df['date'])
-        # Reindex to fill missing dates
-        entries_df = entries_df.set_index('date').reindex(date_range).reset_index()
-        entries_df.rename(columns={'index': 'date'}, inplace=True)
+            # Prepare dates
+            date_range = pd.date_range(start=start_date, end=end_date)
+            if entries_df.empty:
+                # Create empty dataframe
+                entries_df = pd.DataFrame({
+                    'date': date_range,
+                    'hours_worked': [0]*len(date_range),
+                    'tasks_done': ['']*len(date_range),
+                    'facility': ['']*len(date_range),
+                })
+            else:
+                entries_df['date'] = pd.to_datetime(entries_df['date'])
+                # Reindex to fill missing dates
+                entries_df = entries_df.set_index('date').reindex(date_range).reset_index()
+                entries_df.rename(columns={'index': 'date'}, inplace=True)
+                
+                # Add these lines to handle missing values
+                entries_df['hours_worked'] = entries_df['hours_worked'].fillna(0)
+                entries_df['tasks_done'] = entries_df['tasks_done'].fillna('')
+                entries_df['facility'] = entries_df['facility'].fillna('')
 
-        # Fill missing values with defaults
-        entries_df['hours_worked'] = entries_df['hours_worked'].fillna(0)
-        entries_df['tasks_done'] = entries_df['tasks_done'].fillna('')
-        entries_df['facility'] = entries_df['facility'].fillna('')
+            with st.form("entry_form"):
+                st.write("Fill in your work details for each day.")
+                entries = []
+                for idx, row in entries_df.iterrows():
+                    date = row['date'].date()
+                    st.subheader(f"Date: {date}")
+                    hours_worked = st.number_input(
+                        f"Hours Worked on {date}",
+                        min_value=0,
+                        max_value=24,
+                        value=int(row['hours_worked']),
+                        key=f"hours_{idx}"
+                    )
+                    tasks_done = st.text_input(
+                        f"Tasks Done on {date}",
+                        value=row['tasks_done'],
+                        key=f"tasks_{idx}"
+                    )
+                    facility = st.text_input(
+                        f"Facility on {date}",
+                        value=row['facility'],
+                        key=f"facility_{idx}"
+                    )
 
-    with st.form("entry_form"):
-        st.write("Fill in your work details for each day.")
-        entries = []
-        for idx, row in entries_df.iterrows():
-            date = row['date'].date()
-            st.subheader(f"Date: {date}")
-            hours_worked = st.number_input(
-                f"Hours Worked on {date}",
-                min_value=0,
-                max_value=24,
-                value=int(row['hours_worked']),
-                key=f"hours_{idx}"
-            )
-            tasks_done = st.text_input(
-                f"Tasks Done on {date}",
-                value=row['tasks_done'],
-                key=f"tasks_{idx}"
-            )
-            facility = st.text_input(
-                f"Facility on {date}",
-                value=row['facility'],
-                key=f"facility_{idx}"
-            )
+                    entry = {
+                        'user_id': user['id'],
+                        'date': row['date'].isoformat(),
+                        'period': period,
+                        'month': start_date.month,
+                        'year': start_date.year,
+                        'hours_worked': hours_worked,
+                        'tasks_done': tasks_done,
+                        'facility': facility
+                    }
+                    entries.append(entry)
 
-            entry = {
-                'user_id': user['id'],
-                'date': row['date'].isoformat(),
-                'period': period,
-                'month': start_date.month,
-                'year': start_date.year,
-                'hours_worked': hours_worked,
-                'tasks_done': tasks_done,
-                'facility': facility
-            }
-            entries.append(entry)
-
-        submitted = st.form_submit_button("Save Entries")
-        if submitted:
-            try:
-                save_entries(entries)
-                st.success("Entries saved successfully!")
-            except Exception as e:
-                st.error(f"Error saving entries: {str(e)}")
-except Exception as e:
-    st.error(f"Error loading entries: {str(e)}")
-
+                submitted = st.form_submit_button("Save Entries")
+                if submitted:
+                    try:
+                        save_entries(entries)
+                        st.success("Entries saved successfully!")
+                    except Exception as e:
+                        st.error(f"Error saving entries: {str(e)}")
+        except Exception as e:
+            st.error(f"Error loading entries: {str(e)}")
